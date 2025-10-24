@@ -1,0 +1,41 @@
+# Binaries for programs and plugins
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.wasm
+
+# Output of the go command
+.cache/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Dependency directories
+vendor/
+pkg/
+
+# Go workspace file
+go.work
+go.work.sum
+
+# Environment variables
+.env
+.env.*
+
+# Local development
+/tmp/
+
+token/testdata/*.p8
+token/testdata/*.pem
