@@ -6,17 +6,6 @@ import (
 	"net/http/httptrace"
 )
 
-func WithClientTrace(f func(*slog.Logger) *httptrace.ClientTrace) Option {
-	return func(c *Client) bool {
-		if c != nil {
-			if tr := f(c.logger); tr != nil {
-				c.trace = tr
-			}
-		}
-		return true
-	}
-}
-
 // DefaultClientTrace returns a ClientTrace with all callbacks implemented
 // using the provided Logger. Unused callbacks can be set to nil by the caller.
 func DefaultClientTrace(logger *slog.Logger, level slog.Level) *httptrace.ClientTrace {
