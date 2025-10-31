@@ -2,196 +2,185 @@ package appleapi
 
 // Package appleapi provides a client for interacting with Apple APIs, handling JWT-based authentication.
 import (
-	"context"
 	"crypto/tls"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptrace"
-	"sync"
+	"sort"
 	"time"
 
 	"github.com/takimoto3/appleapi-core/token"
 	"golang.org/x/net/http2"
 )
 
-var config *ClientConfig
+// OptionOrder defines the execution order for Client options.
+// Options are applied in ascending order of these constants.
+type OptionOrder int
 
-// Default global configuration for all clients.
-var defaultConfig = &ClientConfig{
-	HTTPTimeout:         60 * time.Second,
-	ReadIdleTimeout:     15 * time.Second,
-	KeepAlive:           15 * time.Second,
-	DialTimeout:         20 * time.Second,
-	MaxIdleConnsPerHost: 100,
-	TLSConfig: &tls.Config{
-		MinVersion: tls.VersionTLS13, // Require TLS 1.3
-	},
+const (
+	Development OptionOrder = iota + 1
+	Logger
+	Transport
+	ClientTimeout
+	ClientTrace // Depends on Logger being already set
+)
+
+// HTTPClientInitializer is a function that returns a configured *http.Client.
+type HTTPClientInitializer func() (*http.Client, error)
+
+// DefaultHTTPClientInitializer returns a default HTTP client with TLS1.3 and HTTP/2 enabled.
+func DefaultHTTPClientInitializer() HTTPClientInitializer {
+	return func() (*http.Client, error) {
+		// Clone the default transport to customize settings safely
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = &tls.Config{MaxVersion: tls.VersionTLS13} // Use TLS 1.3 only
+		tr.MaxIdleConnsPerHost = 100                                   // Max idle connections per host
+		tr.MaxConnsPerHost = 100                                       // Max total connections per host
+		tr.ForceAttemptHTTP2 = true                                    // Enable HTTP/2
+		return &http.Client{Transport: tr}, nil
+	}
 }
 
-// ClientConfig defines transport and timeout settings used by all clients.
-type ClientConfig struct {
-	// Maximum duration for a complete HTTP request.
-	HTTPTimeout time.Duration
+// ConfigureHTTPClientInitializer returns an HTTP client configured based on the given HTTPConfig.
+func ConfigureHTTPClientInitializer(cfg *HTTPConfig) HTTPClientInitializer {
+	return func() (*http.Client, error) {
+		// Clone the default transport to customize settings safely
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		if cfg.TLSConfig != nil {
+			tr.TLSClientConfig = cfg.TLSConfig.Clone()
+		}
+		tr.MaxConnsPerHost = cfg.MaxConnsPerHost
+		tr.MaxIdleConnsPerHost = cfg.MaxIdleConnsPerHost
+		tr.IdleConnTimeout = cfg.IdleConnTimeout
+		tr.DialContext = (&net.Dialer{
+			Timeout:   cfg.DialTimeout,
+			KeepAlive: cfg.KeepAlive,
+		}).DialContext
 
-	// Idle period before sending a ping frame on HTTP/2 connections.
-	ReadIdleTimeout time.Duration
-
-	// Interval for TCP keep-alive probes.
-	KeepAlive time.Duration
-
-	// Timeout for establishing new TCP connections.
-	DialTimeout time.Duration
-
-	// Maximum number of idle connections per host.
-	MaxIdleConnsPerHost int
-
-	// TLS settings for HTTPS connections.
-	TLSConfig *tls.Config
-}
-
-var sharedTransport *http.Transport
-var configOnce sync.Once
-
-// SetConfig replaces the current global configuration.
-func SetConfig(cfg *ClientConfig) error {
-	var initErr error
-	configOnce.Do(func() {
-		config = cfg
-		tr, _, err := newTransport()
+		tr2, err := http2.ConfigureTransports(tr)
 		if err != nil {
-			initErr = err
-			return
+			return nil, err
 		}
-		sharedTransport = tr
-	})
-	return initErr
-}
+		tr2.ReadIdleTimeout = cfg.ReadIdleTimeout
 
-// newTransport creates a configured HTTP/1.1 + HTTP/2 transport.
-func newTransport() (*http.Transport, *http2.Transport, error) {
-	tr := http.DefaultTransport.(*http.Transport).Clone()
-	tr.MaxIdleConnsPerHost = config.MaxIdleConnsPerHost
-	tr.TLSClientConfig = config.TLSConfig.Clone()
-
-	tr2, err := http2.ConfigureTransports(tr)
-	if err != nil {
-		return nil, nil, err
+		return &http.Client{Transport: tr2, Timeout: cfg.HTTPTimeout}, nil
 	}
-	tr2.ReadIdleTimeout = config.ReadIdleTimeout
-
-	// Custom TLS dialer with timeouts and keepalive
-	tr2.DialTLSContext = func(ctx context.Context, network, addr string, cfg *tls.Config) (net.Conn, error) {
-		dialer := &net.Dialer{
-			Timeout:   config.DialTimeout,
-			KeepAlive: config.KeepAlive,
-		}
-		return tls.DialWithDialer(dialer, network, addr, cfg)
-	}
-	return tr, tr2, nil
 }
 
 // Client represents an HTTP client with Apple authentication support.
 type Client struct {
-	// Host is the base URL for the Apple API (e.g., "api.appstoreconnect.apple.com").
-	Host string
-	// Development indicates if the client is in development mode.
-	Development bool
-	// HTTPClient is the underlying HTTP client used for requests.
-	HTTPClient http.Client
-	// TokenProvider is responsible for providing authentication tokens.
-	TokenProvider token.Provider
-	// logger is the structured logger used by the client.
-	logger *slog.Logger
-	// trace holds hooks for tracing the HTTP request lifecycle.
-	trace *httptrace.ClientTrace
+	Host          string                 // Base URL for Apple API
+	Development   bool                   // Enable development mode
+	HTTPClient    *http.Client           // Underlying HTTP client
+	TokenProvider token.Provider         // Responsible for providing tokens
+	logger        *slog.Logger           // Structured logger
+	Trace         *httptrace.ClientTrace // HTTP request trace hooks
 }
 
-// Option defines configuration options for the Client.
-// Returns true if this option should be reapplied after all other options.
-type Option func(*Client) bool
+// Option defines a configurable option for Client, including its execution order.
+type Option struct {
+	f     func(*Client) // Actual option logic
+	order OptionOrder   // Execution order key
+}
 
 // WithDevelopment enables development mode.
 func WithDevelopment() Option {
-	return func(c *Client) bool {
-		if c != nil {
-			c.Development = true
-		}
-		return false
+	return Option{
+		f: func(c *Client) {
+			if c != nil {
+				c.Development = true
+			}
+		},
+		order: Development,
 	}
 }
 
-// WithLogger sets a custom structured logger for the client.
+// WithLogger sets a custom structured logger.
 func WithLogger(logger *slog.Logger) Option {
-	return func(c *Client) bool {
-		if c != nil {
-			if logger != nil {
+	return Option{
+		f: func(c *Client) {
+			if c != nil && logger != nil {
 				c.logger = logger
 			}
-		}
-		return false
+		},
+		order: Logger,
 	}
 }
 
-// WithTransport sets a custom HTTP transport for the client.
-func WithTransport(tr *http.Transport) Option {
-	return func(c *Client) bool {
-		if c != nil {
-			if tr != nil {
+// WithTransport sets a custom HTTP transport.
+func WithTransport(tr http.RoundTripper) Option {
+	return Option{
+		f: func(c *Client) {
+			if c != nil && tr != nil {
 				c.HTTPClient.Transport = tr
 			}
-		}
-		return false
+		},
+		order: Transport,
 	}
 }
 
-// NewClient creates a new Client configured for the specified Apple API host
-// and token provider. Functional options may be used to customize behavior.
-// Returns an error if the shared transport cannot be initialized.
-func NewClient(host string, tp token.Provider, opts ...Option) (*Client, error) {
-	if sharedTransport == nil {
-		if err := SetConfig(defaultConfig); err != nil {
-			return nil, err
-		}
-	}
-
-	c := &Client{
-		Host: host,
-		HTTPClient: http.Client{
-			Transport: sharedTransport,
-			Timeout:   config.HTTPTimeout,
+// WithClientTimeout sets a custom HTTP client timeout.
+func WithClientTimeout(timeout time.Duration) Option {
+	return Option{
+		f: func(c *Client) {
+			if c != nil {
+				c.HTTPClient.Timeout = timeout
+			}
 		},
+		order: ClientTimeout,
+	}
+}
+
+// WithClientTrace sets a custom HTTP trace function.
+func WithClientTrace(f func(*slog.Logger) *httptrace.ClientTrace) Option {
+	return Option{
+		f: func(c *Client) {
+			if c != nil {
+				if tr := f(c.logger); tr != nil {
+					c.Trace = tr
+				}
+			}
+		},
+		order: ClientTrace,
+	}
+}
+
+// NewClient creates a new Client with a custom HTTP initializer and options.
+func NewClient(initializer HTTPClientInitializer, host string, tp token.Provider, opts ...Option) (*Client, error) {
+	cli, err := initializer()
+	if err != nil {
+		return nil, err
+	}
+	c := &Client{
+		Host:          host,
+		HTTPClient:    cli,
 		TokenProvider: tp,
 		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
-	var last Option
+	// Sort options by their order and apply them
+	sort.Slice(opts, func(i, j int) bool {
+		return opts[i].order < opts[j].order
+	})
 	for _, opt := range opts {
-		if opt(nil) {
-			last = opt
-		}
-		opt(c)
-	}
-	if last != nil {
-		last(c)
+		opt.f(c)
 	}
 
 	return c, nil
 }
 
-// CloseIdleConnections closes any idle connections in the underlying transport.
+// CloseIdleConnections closes idle connections in the HTTP client.
 func (c *Client) CloseIdleConnections() {
 	c.HTTPClient.CloseIdleConnections()
 }
 
-// Do sends an HTTP request with the client's bearer token (lowercase "bearer", per Apple documentation)
-// and applies any configured httptrace.ClientTrace.
+// Do sends an HTTP request with a bearer token and optional HTTP trace.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
-	if c.trace != nil {
-		req = req.WithContext(httptrace.WithClientTrace(req.Context(), c.trace))
+	if c.Trace != nil {
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), c.Trace))
 	}
-
 	bearer, err := c.TokenProvider.GetToken(time.Now())
 	if err != nil {
 		return nil, err

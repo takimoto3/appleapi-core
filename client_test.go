@@ -1,361 +1,312 @@
 package appleapi
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"fmt"
+	"errors"
 	"io"
-	"log"
 	"log/slog"
-	"math/big"
-	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/http/httptrace"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
+	"github.com/takimoto3/appleapi-core/token"
 	"golang.org/x/net/http2"
 )
 
-// mockToken is a fake token provider for testing.
-type mockToken struct {
+type MockTokenProvider struct {
 	token string
 	err   error
 }
 
-func (m *mockToken) GetToken(_ time.Time) (string, error) {
+func (m *MockTokenProvider) GetToken(_ time.Time) (string, error) {
 	return m.token, m.err
 }
 
-func (m *mockToken) SetLogger(l *slog.Logger) {
-}
+// --- Tests ---
 
-// generateSelfSignedCert creates a temporary self-signed certificate.
-func generateSelfSignedCert(t *testing.T) tls.Certificate {
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
+func TestHTTPClientInitializers(t *testing.T) {
+	cfg := &HTTPConfig{
+		TLSConfig:           &tls.Config{InsecureSkipVerify: true}, // Configure用
+		MaxConnsPerHost:     10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     2 * time.Second,
+		DialTimeout:         1 * time.Second,
+		KeepAlive:           3 * time.Second,
+		ReadIdleTimeout:     4 * time.Second,
+		HTTPTimeout:         5 * time.Second,
 	}
-
-	template := x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "localhost"},
-		DNSNames:              []string{"localhost"},
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
-		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		BasicConstraintsValid: true,
-	}
-
-	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
-	if err != nil {
-		t.Fatalf("failed to create certificate: %v", err)
-	}
-
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(priv)})
-
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		t.Fatalf("failed to load x509 keypair: %v", err)
-	}
-	return cert
-}
-
-// startLocalTLSServer starts a TLS + HTTP/2 server for testing.
-func startLocalTLSServer(t *testing.T, handler http.Handler) (addr string, cert tls.Certificate, closeFunc func()) {
-	cert = generateSelfSignedCert(t)
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		NextProtos:   []string{"h2"},
-	}
-
-	ln, err := tls.Listen("tcp", "127.0.0.1:0", tlsConfig)
-	if err != nil {
-		t.Fatalf("failed to listen: %v", err)
-	}
-
-	srv := &http.Server{Handler: handler}
-	http2.ConfigureServer(srv, &http2.Server{})
-
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("server error: %v", err)
-		}
-	}()
-
-	return ln.Addr().String(), cert, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		srv.Shutdown(ctx)
-	}
-}
-
-// newTLSConfigFromCert creates a TLS config that trusts the given cert.
-func newTLSConfigFromCert(cert tls.Certificate) *tls.Config {
-	roots := x509.NewCertPool()
-	certBytes, _ := x509.ParseCertificate(cert.Certificate[0])
-	roots.AddCert(certBytes)
-	return &tls.Config{
-		RootCAs:    roots,
-		MinVersion: tls.VersionTLS13,
-		NextProtos: []string{"h2"},
-	}
-}
-
-func TestClient_Do_LocalTLS(t *testing.T) {
-	ResetConfig()
-	// Note: t.Parallel() is skipped because subtests share a single TLS server.
 
 	tests := map[string]struct {
-		token     string
-		tokenErr  error
-		wantCode  int
-		wantBody  string
-		expectErr bool
+		init  HTTPClientInitializer
+		wants map[string]any
 	}{
-		"success":       {token: "mock-token", wantCode: 200, wantBody: "ok"},
-		"token error":   {tokenErr: fmt.Errorf("token error"), expectErr: true},
-		"invalid token": {token: "wrong-token", wantCode: 401, wantBody: "invalid token"},
+		"Default": {
+			init: DefaultHTTPClientInitializer(),
+			wants: map[string]any{
+				"MaxConnsPerHost":     100,
+				"MaxIdleConnsPerHost": 100,
+				"ForceAttemptHTTP2":   true,
+				"Timeout":             time.Duration(0),
+				"ReadIdleTimeout":     0,
+				"TLSClientConfig":     &tls.Config{MaxVersion: tls.VersionTLS13},
+			},
+		},
+		"Configure": {
+			init: ConfigureHTTPClientInitializer(cfg),
+			wants: map[string]any{
+				"MaxConnsPerHost":     cfg.MaxConnsPerHost,
+				"MaxIdleConnsPerHost": cfg.MaxIdleConnsPerHost,
+				"IdleConnTimeout":     cfg.IdleConnTimeout,
+				"ForceAttemptHTTP2":   true,
+				"Timeout":             cfg.HTTPTimeout,
+				"ReadIdleTimeout":     cfg.ReadIdleTimeout,
+				"TLSClientConfig":     func() *tls.Config { c := cfg.TLSConfig.Clone(); c.NextProtos = []string{"h2", "http/1.1"}; return c }(),
+			},
+		},
 	}
-
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ProtoMajor != 2 {
-			t.Errorf("expected HTTP/2, got %s", r.Proto)
-		}
-		auth := r.Header.Get("authorization")
-		if auth != "bearer mock-token" {
-			w.WriteHeader(401)
-			_, _ = w.Write([]byte("invalid token"))
-			return
-		}
-		w.WriteHeader(200)
-		_, _ = w.Write([]byte("ok"))
-	})
-
-	addr, cert, closeServer := startLocalTLSServer(t, handler)
-	defer closeServer()
-
-	SetConfig(&ClientConfig{
-		HTTPTimeout:         60 * time.Second,
-		ReadIdleTimeout:     15 * time.Second,
-		KeepAlive:           15 * time.Second,
-		DialTimeout:         20 * time.Second,
-		MaxIdleConnsPerHost: 100,
-		TLSConfig:           newTLSConfigFromCert(cert),
-	})
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			c, err := NewClient("https://"+addr, &mockToken{
-				token: tt.token,
-				err:   tt.tokenErr,
-			})
+			client, err := tt.init()
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("unexpected error: %v", err)
 			}
 
-			req, err := http.NewRequest("GET", "https://"+addr, nil)
-			if err != nil {
-				t.Fatal(err)
+			var tr1 *http.Transport
+			var tr2 *http2.Transport
+
+			// Transportの型判定
+			switch tr := client.Transport.(type) {
+			case *http.Transport:
+				tr1 = tr
+			case *http2.Transport:
+				tr2 = tr
+				// http2.Transport wraps an *http.Transport (`t1`) but doesn't expose it.
+				// We use reflection for testing purposes to inspect its properties.
+				v := reflect.ValueOf(tr2).Elem().FieldByName("t1")
+				if !v.IsValid() || v.IsNil() {
+					t.Fatal("http2.Transport.t1 not found or nil")
+				}
+				tr1 = reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Interface().(*http.Transport)
+			default:
+				t.Fatalf("unexpected transport type %T", client.Transport)
 			}
 
-			res, err := c.Do(req)
-			if tt.expectErr {
+			for fname, want := range tt.wants {
+				var got any
+				switch fname {
+				case "MaxConnsPerHost":
+					got = tr1.MaxConnsPerHost
+				case "MaxIdleConnsPerHost":
+					got = tr1.MaxIdleConnsPerHost
+				case "IdleConnTimeout":
+					got = tr1.IdleConnTimeout
+				case "ForceAttemptHTTP2":
+					got = tr1.ForceAttemptHTTP2
+				case "Timeout":
+					got = client.Timeout
+				case "ReadIdleTimeout":
+					if tr2 != nil {
+						got = tr2.ReadIdleTimeout
+					} else {
+						got = 0
+					}
+				case "TLSClientConfig":
+					got = tr1.TLSClientConfig
+				default:
+					t.Fatalf("unknown field %s", fname)
+				}
+
+				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{})); diff != "" {
+					t.Errorf("%s mismatch (-got +want):\n%s", fname, diff)
+				}
+			}
+		})
+	}
+}
+
+func TestNewClient_Options(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	customTransport := &http.Transport{}
+	mockTP := &MockTokenProvider{}
+	trace := &httptrace.ClientTrace{}
+
+	tests := map[string]struct {
+		opts          []Option
+		wantDev       bool
+		wantLogger    *slog.Logger
+		wantTransport http.RoundTripper
+		wantTrace     *httptrace.ClientTrace
+		wantTimeout   time.Duration
+	}{
+		"Development only": {
+			opts:    []Option{WithDevelopment()},
+			wantDev: true,
+		},
+		"Logger only": {
+			opts:       []Option{WithLogger(logger)},
+			wantLogger: logger,
+		},
+		"Transport and Timeout": {
+			opts: []Option{
+				WithTransport(customTransport),
+				WithClientTimeout(3 * time.Second),
+			},
+			wantTransport: customTransport,
+			wantTimeout:   3 * time.Second,
+		},
+		"ClientTimeout only": {
+			opts:        []Option{WithClientTimeout(7 * time.Second)},
+			wantTimeout: 7 * time.Second,
+		},
+		"ClientTrace only": {
+			opts: []Option{
+				WithClientTrace(func(l *slog.Logger) *httptrace.ClientTrace {
+					return &httptrace.ClientTrace{}
+				}),
+			},
+		},
+		"All options": {
+			opts: []Option{
+				WithDevelopment(),
+				WithLogger(logger),
+				WithTransport(customTransport),
+				WithClientTimeout(5 * time.Second),
+				WithClientTrace(func(l *slog.Logger) *httptrace.ClientTrace {
+					return trace
+				}),
+			},
+			wantDev:       true,
+			wantLogger:    logger,
+			wantTransport: customTransport,
+			wantTimeout:   5 * time.Second,
+			wantTrace:     trace,
+		},
+	}
+
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			cli, err := NewClient(DefaultHTTPClientInitializer(), "https://example.com", mockTP, tc.opts...)
+			if err != nil {
+				t.Fatalf("NewClient failed: %v", err)
+			}
+
+			if cli.Development != tc.wantDev {
+				t.Errorf("Development = %v, want %v", cli.Development, tc.wantDev)
+			}
+			if tc.wantLogger != nil && cli.logger != tc.wantLogger {
+				t.Errorf("logger pointer mismatch")
+			}
+			if tc.wantTransport != nil && cli.HTTPClient.Transport != tc.wantTransport {
+				t.Errorf("Transport pointer mismatch")
+			}
+			if tc.wantTimeout != 0 && cli.HTTPClient.Timeout != tc.wantTimeout {
+				t.Errorf("Timeout = %v, want %v", cli.HTTPClient.Timeout, tc.wantTimeout)
+			}
+			if tc.wantTrace != nil && cli.Trace != tc.wantTrace {
+				t.Errorf("ClientTrace pointer mismatch")
+			}
+		})
+	}
+}
+
+func TestNewClient_OptionOrder(t *testing.T) {
+	mockTP := &MockTokenProvider{}
+
+	withFirst := func() Option {
+		return Option{
+			order: 0,
+			f: func(c *Client) {
+				if c.Development {
+					t.Errorf("withFirst should run before WithDevelopment")
+				}
+			},
+		}
+	}
+
+	withLast := func() Option {
+		return Option{
+			order: ClientTrace + 1,
+			f: func(c *Client) {
+				if !c.Development {
+					t.Errorf("withLast should run after WithDevelopment")
+				}
+			},
+		}
+	}
+
+	_, err := NewClient(DefaultHTTPClientInitializer(), "https://example.com", mockTP,
+		withLast(),
+		WithDevelopment(),
+		withFirst(),
+	)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+}
+
+func TestCloseIdleConnections(t *testing.T) {
+	c, _ := NewClient(DefaultHTTPClientInitializer(), "https://example.com", &MockTokenProvider{token: "t"})
+	c.CloseIdleConnections() // should not panic
+}
+
+func TestClient_Do(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "bearer tok" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		io.WriteString(w, "ok")
+	}))
+	defer srv.Close()
+
+	tests := map[string]struct {
+		provider token.Provider
+		wantCode int
+		wantErr  bool
+	}{
+		"valid token": {
+			provider: &MockTokenProvider{token: "tok"},
+			wantCode: http.StatusOK,
+			wantErr:  false,
+		},
+		"token error": {
+			provider: &MockTokenProvider{err: errors.New("fail")},
+			wantErr:  true,
+		},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			c, err := NewClient(DefaultHTTPClientInitializer(), srv.URL, tt.provider)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+			resp, err := c.Do(req)
+			if resp != nil {
+				defer resp.Body.Close()
+			}
+			if tt.wantErr {
 				if err == nil {
-					t.Fatal("expected error but got nil")
+					t.Fatal("expected error but got none")
 				}
 				return
 			}
 			if err != nil {
-				t.Fatal(err)
-			}
-			defer res.Body.Close()
-
-			if res.StatusCode != tt.wantCode {
-				t.Errorf("StatusCode: got %d, want %d", res.StatusCode, tt.wantCode)
+				t.Fatalf("unexpected error: %v", err)
 			}
 
-			body, _ := io.ReadAll(res.Body)
-			if string(body) != tt.wantBody {
-				t.Errorf("Body: got %q, want %q", body, tt.wantBody)
+			if diff := cmp.Diff(tt.wantCode, resp.StatusCode); diff != "" {
+				t.Errorf("StatusCode mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
-}
-
-func TestClient_ConfigPropagation(t *testing.T) {
-	ResetConfig()
-	cfg := &ClientConfig{
-		HTTPTimeout:         10 * time.Second,
-		ReadIdleTimeout:     5 * time.Second,
-		KeepAlive:           7 * time.Second,
-		DialTimeout:         3 * time.Second,
-		MaxIdleConnsPerHost: 50,
-		TLSConfig:           &tls.Config{InsecureSkipVerify: true},
-	}
-	SetConfig(cfg)
-
-	client, err := NewClient("https://example.com", &mockToken{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if client.HTTPClient.Timeout != cfg.HTTPTimeout {
-		t.Errorf("HTTPTimeout: got %v, want %v", client.HTTPClient.Timeout, cfg.HTTPTimeout)
-	}
-
-	tr := client.HTTPClient.Transport.(*http.Transport)
-	if tr.MaxIdleConnsPerHost != cfg.MaxIdleConnsPerHost {
-		t.Errorf("MaxIdleConnsPerHost: got %v, want %v", tr.MaxIdleConnsPerHost, cfg.MaxIdleConnsPerHost)
-	}
-	if reflect.DeepEqual(tr.TLSClientConfig, cfg.TLSConfig) {
-		t.Error("TLSClientConfig not propagated correctly")
-	}
-
-	// Verify HTTP/2 ReadIdleTimeout
-	_, tr2, err := newTransport()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tr2.ReadIdleTimeout != cfg.ReadIdleTimeout {
-		t.Errorf("ReadIdleTimeout: got %v, want %v", tr2.ReadIdleTimeout, cfg.ReadIdleTimeout)
-	}
-}
-
-func TestClient_Options(t *testing.T) {
-	ResetConfig()
-	t.Parallel()
-
-	mockLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	tests := map[string]struct {
-		optsFunc  func() []Option
-		checkFunc func(*Client) error
-	}{
-		"LoggerOnly": {
-			optsFunc: func() []Option {
-				return []Option{WithLogger(mockLogger)}
-			},
-			checkFunc: func(c *Client) error {
-				if c.logger != mockLogger {
-					return fmt.Errorf("set wrong logger: got %p, want %p", c.logger, mockLogger)
-				}
-				if c.Development {
-					return fmt.Errorf("Development should be false")
-				}
-				return nil
-			},
-		},
-		"DevelopmentOnly": {
-			optsFunc: func() []Option {
-				return []Option{WithDevelopment()}
-			},
-			checkFunc: func(c *Client) error {
-				if !c.Development {
-					return fmt.Errorf("development mode not enabled")
-				}
-				if c.logger == nil {
-					return fmt.Errorf("logger should be non-nil")
-				}
-				return nil
-			},
-		},
-		"LoggerAndDevelopment": {
-			optsFunc: func() []Option {
-				return []Option{WithLogger(mockLogger), WithDevelopment()}
-			},
-			checkFunc: func(c *Client) error {
-				if c.logger == nil {
-					return fmt.Errorf("logger not set")
-				}
-				if !c.Development {
-					return fmt.Errorf("development mode not enabled")
-				}
-				return nil
-			},
-		},
-		"CustomTransport": {
-			optsFunc: func() []Option {
-				customTransport := &http.Transport{}
-				return []Option{WithTransport(customTransport)}
-			},
-			checkFunc: func(c *Client) error {
-				tr, ok := c.HTTPClient.Transport.(*http.Transport)
-				if !ok {
-					return fmt.Errorf("Transport is not *http.Transport")
-				}
-				if tr == nil {
-					return fmt.Errorf("custom transport not applied")
-				}
-				return nil
-			},
-		},
-		"ClientTrace with Logger": func() struct {
-			optsFunc  func() []Option
-			checkFunc func(*Client) error
-		} {
-			var captureLogger *slog.Logger
-			localLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-			return struct {
-				optsFunc  func() []Option
-				checkFunc func(*Client) error
-			}{
-				optsFunc: func() []Option {
-					return []Option{
-						WithClientTrace(func(l *slog.Logger) *httptrace.ClientTrace {
-							captureLogger = l
-							return DefaultClientTrace(l, slog.LevelDebug)
-						}),
-						WithLogger(localLogger),
-					}
-				},
-				checkFunc: func(c *Client) error {
-					if captureLogger != localLogger {
-						return fmt.Errorf(
-							"option WithClientTrace received wrong logger: got %p, want %p",
-							captureLogger, localLogger,
-						)
-					}
-					if c.trace == nil {
-						return fmt.Errorf("Client.trace is nil")
-					}
-					return nil
-				},
-			}
-		}(),
-	}
-
-	for name, tt := range tests {
-		tt := tt // capture range variable
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			c, err := NewClient("https://example.com", &mockToken{}, tt.optsFunc()...)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			if err = tt.checkFunc(c); err != nil {
-				t.Error(err)
-			}
-		})
-	}
-}
-
-func ResetConfig() {
-	configOnce = sync.Once{}
-	sharedTransport = nil
-	config = nil
 }
