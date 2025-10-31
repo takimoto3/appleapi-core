@@ -35,12 +35,12 @@ func (jt *JWTToken) SignedString(s Signer) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JWT header to JSON: %w", err)
 	}
-	paylod, err := json.Marshal(jt.Payload)
+	payload, err := json.Marshal(jt.Payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JWT payload to JSON: %w", err)
 	}
 	// Create the base string: header.payload
-	str := base64.RawURLEncoding.EncodeToString(head) + "." + base64.RawURLEncoding.EncodeToString(paylod)
+	str := base64.RawURLEncoding.EncodeToString(head) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	// Sign the base string
 	sign, err := s.Sign(str)
 	if err != nil {

@@ -159,72 +159,57 @@ func generateInvalidP8File(t *testing.T, tmpDir string) string {
 func TestLoadP8File(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// --- Test Case 1: P8 key file does not exist ---
-	t.Run("NonExistentP8KeyFile", func(t *testing.T) {
-		key, err := token.LoadPKCS8File("non_existent.p8")
-		if err == nil {
-			t.Fatalf("expected an error, but got nil")
-		}
-		// Verify the returned key is nil on error.
-		if key != nil {
-			t.Errorf("expected nil key on error, but got %v", key)
-		}
-		// Verify the error message matches expectation.
-		if !strings.Contains(err.Error(), "failed to read file") {
-			t.Errorf("got unexpected error for non-existent file: %v", err)
-		}
-	})
+	testCases := map[string]struct {
+		setup       func(t *testing.T, dir string) string
+		wantErr     bool
+		errContains string
+	}{
+		"ValidP8KeyFile": {
+			setup:       generateECDSAP8Key,
+			wantErr:     false,
+			errContains: "",
+		},
+		"NonExistentP8KeyFile": {
+			setup:       func(t *testing.T, dir string) string { return "non_existent.p8" },
+			wantErr:     true,
+			errContains: "failed to read file",
+		},
+		"InvalidP8KeyFileFormat": {
+			setup:       generateInvalidP8File,
+			wantErr:     true,
+			errContains: "does not contain valid PEM data",
+		},
+		"P8ContainsRSAKeyExpectedECDSA": {
+			setup:       generateRSAP8Key,
+			wantErr:     true,
+			errContains: "is not an ECDSA key (actual type:",
+		},
+	}
 
-	// --- Test Case 2: Valid P8 key file ---
-	t.Run("ValidP8KeyFile", func(t *testing.T) {
-		filePath := generateECDSAP8Key(t, tmpDir)
-		key, err := token.LoadPKCS8File(filePath)
-		if err != nil {
-			t.Fatalf("failed unexpectedly for valid file: %v", err)
-		}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			filePath := tc.setup(t, tmpDir)
 
-		// Verify that a non-nil key was returned.
-		if key == nil {
-			t.Errorf("private key is nil")
-		}
-		// Further checks could involve verifying the curve (e.g., key.Curve == elliptic.P256())
-		// or specific key parameters if known for the test file.
-		t.Logf("Successfully loaded PKCS8 file: %s", filePath)
-	})
+			key, err := token.LoadPKCS8File(filePath)
 
-	// --- Test Case 3: Invalid P8 key file format or content ---
-	t.Run("InvalidP8KeyFileFormat", func(t *testing.T) {
-		filePath := generateInvalidP8File(t, tmpDir)
-		key, err := token.LoadPKCS8File(filePath)
-		if err == nil {
-			t.Errorf("expected an error for invalid file format, but got nil")
-		}
-		// Verify the returned key is nil on error.
-		if key != nil {
-			t.Errorf("expected nil key on error, but got %v", key)
-		}
-		// Verify the error message matches the mock's expectation.
-		if err != nil && !strings.Contains(err.Error(), "does not contain valid PEM data") {
-			t.Errorf("got unexpected error for invalid format: %v", err)
-		}
-	})
-
-	// --- Test Case 4: P8 file contains RSA key, but ECDSA is expected ---
-	// This tests the scenario where the underlying P8 parsing might succeed
-	// in extracting *a* private key, but it's not the *expected* ECDSA type.
-	// Your real LoadP8File should handle this type assertion failure.
-	t.Run("P8ContainsRSAKeyExpectedECDSA", func(t *testing.T) {
-		filePath := generateRSAP8Key(t, tmpDir)
-		key, err := token.LoadPKCS8File(filePath)
-		if err == nil {
-			t.Errorf("expected an error for RSA key when ECDSA is expected, but got nil")
-		}
-		if key != nil {
-			t.Errorf("expected nil key on error, but got %v", key)
-		}
-		// Verify the error message matches the mock's expectation for this specific case.
-		if err != nil && !strings.Contains(err.Error(), "is not an ECDSA key (actual type:") {
-			t.Errorf("got unexpected error for RSA key type: %v", err)
-		}
-	})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, but got nil")
+				}
+				if key != nil {
+					t.Errorf("expected nil key on error, but got %v", key)
+				}
+				if !strings.Contains(err.Error(), tc.errContains) {
+					t.Errorf("expected error message to contain %q, but got %q", tc.errContains, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("failed unexpectedly for valid file: %v", err)
+				}
+				if key == nil {
+					t.Errorf("private key is nil")
+				}
+			}
+		})
+	}
 }
