@@ -39,3 +39,8 @@ go.work.sum
 
 token/testdata/*.p8
 token/testdata/*.pem
+
+# Private keys
+*.p8
+*.pem
+*.key
