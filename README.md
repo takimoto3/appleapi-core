@@ -64,7 +64,7 @@ func main() {
 
 	// 3. Create the appleapi Client
 	// The host parameter is optional and can be left empty if not needed.
-	client, err := appleapi.NewClient("", tp, appleapi.WithLogger(logger))
+	client, err := appleapi.NewClient(appleapi.DefaultHTTPClientInitializer(), "", tp, appleapi.WithLogger(logger))
 	if err != nil {
 		log.Fatalf("failed to create client: %v", err)
 	}
@@ -105,7 +105,7 @@ The `DefaultClientTrace` helper provides an easy way to enable default tracing w
 
 // 3. Create the appleapi Client with tracing
 // DefaultClientTrace provides a pre-configured trace that logs to the client's logger.
-client, err := appleapi.NewClient("", tp,
+client, err := appleapi.NewClient(appleapi.DefaultHTTPClientInitializer(), "", tp,
     appleapi.WithLogger(logger),
     appleapi.WithClientTrace(func(l *slog.Logger) *httptrace.ClientTrace {
         // The log level can be slog.LevelDebug, slog.LevelInfo, etc.
