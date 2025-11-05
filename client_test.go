@@ -200,7 +200,7 @@ func TestNewClient_Options(t *testing.T) {
 			if cli.Development != tc.wantDev {
 				t.Errorf("Development = %v, want %v", cli.Development, tc.wantDev)
 			}
-			if tc.wantLogger != nil && cli.logger != tc.wantLogger {
+			if tc.wantLogger != nil && cli.Logger != tc.wantLogger {
 				t.Errorf("logger pointer mismatch")
 			}
 			if tc.wantTransport != nil && cli.HTTPClient.Transport != tc.wantTransport {

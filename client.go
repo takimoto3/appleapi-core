@@ -75,7 +75,7 @@ type Client struct {
 	Development   bool                   // Enable development mode
 	HTTPClient    *http.Client           // Underlying HTTP client
 	TokenProvider token.Provider         // Responsible for providing tokens
-	logger        *slog.Logger           // Structured logger
+	Logger        *slog.Logger           // Structured logger
 	Trace         *httptrace.ClientTrace // HTTP request trace hooks
 }
 
@@ -102,7 +102,7 @@ func WithLogger(logger *slog.Logger) Option {
 	return Option{
 		f: func(c *Client) {
 			if c != nil && logger != nil {
-				c.logger = logger
+				c.Logger = logger
 			}
 		},
 		order: Logger,
@@ -138,7 +138,7 @@ func WithClientTrace(f func(*slog.Logger) *httptrace.ClientTrace) Option {
 	return Option{
 		f: func(c *Client) {
 			if c != nil {
-				if tr := f(c.logger); tr != nil {
+				if tr := f(c.Logger); tr != nil {
 					c.Trace = tr
 				}
 			}
@@ -157,7 +157,7 @@ func NewClient(initializer HTTPClientInitializer, host string, tp token.Provider
 		Host:          host,
 		HTTPClient:    cli,
 		TokenProvider: tp,
-		logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Logger:        slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	// Sort options by their order and apply them
