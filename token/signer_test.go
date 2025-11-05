@@ -23,7 +23,7 @@ func TestSignerECDSA_Sign(t *testing.T) {
 		Hash:       crypto.SHA256,
 	}
 
-	message := "test message"
+	message := []byte("test message")
 
 	sig, err := signer.Sign(message)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestSignerECDSA_UnsupportedCurve(t *testing.T) {
 		Hash:       crypto.SHA256,
 	}
 
-	_, err = signer.Sign("message")
+	_, err = signer.Sign([]byte("message"))
 	if err == nil {
 		t.Fatal("expected error for unsupported curve, got nil")
 	}
