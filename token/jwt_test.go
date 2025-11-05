@@ -17,7 +17,7 @@ type mockSigner struct {
 	err      error
 }
 
-func (m *mockSigner) Sign(s string) ([]byte, error) {
+func (m *mockSigner) Sign(data []byte) ([]byte, error) {
 	return m.signData, m.err
 }
 

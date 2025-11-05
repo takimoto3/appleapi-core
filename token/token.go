@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,6 +33,14 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+// WithTTL sets a custom time-to-live for the generated tokens.
+// This overrides the default TokenTTL constant.
+func WithTTL(ttl time.Duration) Option {
+	return func(tp *TokenProvider) {
+		tp.tokenTTL = ttl
+	}
+}
+
 // Provider defines the interface for obtaining JWT-based authentication tokens.
 type Provider interface {
 	// GetToken returns a cached token if still valid, or generates a new one.
@@ -41,36 +50,34 @@ type Provider interface {
 	GetToken(now time.Time) (string, error)
 }
 
+type cachedToken struct {
+	Token    string
+	ExpireAt time.Time
+}
+
 // TokenProvider generates and caches JWT tokens for Apple services (or any JWT-based API)
 // It handles token expiration and signing with the provided key.
 type TokenProvider struct {
-	mu           sync.RWMutex  // mu protects access to currentToken and expiresAt.
-	logger       *slog.Logger  // logger for structured output, can be overridden.
-	signer       Signer        // signer is used to sign JWT tokens.
-	keyID        string        // keyID is the Apple Key ID (or service-specific key identifier).
-	teamID       string        // teamID is the Apple Team ID (or issuer identifier).
-	tokenTTL     time.Duration // tokenTTL is the duration before a cached token expires.
-	currentToken string        // currentToken is the currently cached JWT token.
-	expiresAt    time.Time     // expiresAt is the expiration time of currentToken.
+	cache     atomic.Value
+	writeLock sync.Mutex
+	tokenTTL  time.Duration // tokenTTL is the duration before a cached token expires.
+	logger    *slog.Logger  // logger for structured output, can be overridden.
+	signer    Signer        // signer is used to sign JWT tokens.
+	keyID     string        // keyID is the Apple Key ID (or service-specific key identifier).
+	teamID    string        // teamID is the Apple Team ID (or issuer identifier).
 }
 
 // NewProvider creates a new TokenProvider.
 // Logging is disabled by default unless WithLogger is specified.
-//
-// Parameters:
-//
-//	keyID: The Apple Key ID.
-//	teamId: The Apple Team ID.
-//	secret: The ECDSA private key for signing.
-//	opts: Functional options to configure the TokenProvider.
-func NewProvider(keyID, teamId string, secret *ecdsa.PrivateKey, opts ...Option) Provider {
+func NewProvider(keyID, teamID string, privkey *ecdsa.PrivateKey, opts ...Option) Provider {
 	tp := &TokenProvider{
 		logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
-		signer:   &SignerECDSA{PrivateKey: secret, Hash: crypto.SHA256},
+		signer:   &SignerECDSA{PrivateKey: privkey, Hash: crypto.SHA256},
 		keyID:    keyID,
-		teamID:   teamId,
+		teamID:   teamID,
 		tokenTTL: TokenTTL,
 	}
+	tp.cache.Store(cachedToken{})
 
 	for _, opt := range opts {
 		opt(tp)
@@ -81,48 +88,38 @@ func NewProvider(keyID, teamId string, secret *ecdsa.PrivateKey, opts ...Option)
 
 // GetToken returns a valid JWT token.
 // It reuses the cached token if still valid, or generates a new one.
-//
-// Parameters:
-//
-//	now: The current time, used for token expiration checks.
 func (p *TokenProvider) GetToken(now time.Time) (string, error) {
-	p.mu.RLock()
-
-	if p.currentToken != "" && now.Before(p.expiresAt) {
-		p.mu.RUnlock()
-		return p.currentToken, nil
+	c := p.cache.Load().(cachedToken)
+	if now.Before(c.ExpireAt) && c.Token != "" {
+		return c.Token, nil
 	}
-	p.mu.RUnlock()
+	p.writeLock.Lock()
+	defer p.writeLock.Unlock()
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	// Re-check cache after acquiring write lock
-	if p.currentToken != "" && now.Before(p.expiresAt) {
-		return p.currentToken, nil
+	c = p.cache.Load().(cachedToken)
+	if now.Before(c.ExpireAt) && c.Token != "" {
+		return c.Token, nil
 	}
 
-	jwtToken := JWTToken{
-		Header: Header{
-			Alg: "ES256",
-			Kid: p.keyID,
-		},
-		Payload: Payload{
-			Issuer:   p.teamID,
-			IssuedAt: now.Unix(),
-		},
+	jwt := JWTToken{
+		Header:  Header{Alg: "ES256", Kid: p.keyID},
+		Payload: Payload{Issuer: p.teamID, IssuedAt: now.Unix()},
 	}
 
-	newToken, err := jwtToken.SignedString(p.signer)
+	newToken, err := jwt.SignedString(p.signer)
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT token: %w", err)
 	}
-	p.currentToken = newToken
-	p.expiresAt = now.Add(p.tokenTTL)
+	expiresAt := now.Add(p.tokenTTL)
 
-	p.logger.Info("Token generated successfully", "expires_at", p.expiresAt)
+	p.cache.Store(cachedToken{
+		Token:    newToken,
+		ExpireAt: expiresAt,
+	})
 
-	return p.currentToken, nil
+	p.logger.Info("Token generated successfully", "expires_at", expiresAt)
+
+	return newToken, nil
 }
 
 // LoadPKCS8File loads an ECDSA private key from a PKCS#8 PEM file.

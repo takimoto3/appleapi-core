@@ -29,7 +29,8 @@ type Payload struct {
 // SignedString creates a signed JWT string using the provided signer.
 //
 // Parameters:
-//   s: The Signer implementation used to sign the JWT.
+//
+//	s: The Signer implementation used to sign the JWT.
 func (jt *JWTToken) SignedString(s Signer) (string, error) {
 	head, err := json.Marshal(jt.Header)
 	if err != nil {
@@ -42,7 +43,7 @@ func (jt *JWTToken) SignedString(s Signer) (string, error) {
 	// Create the base string: header.payload
 	str := base64.RawURLEncoding.EncodeToString(head) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	// Sign the base string
-	sign, err := s.Sign(str)
+	sign, err := s.Sign([]byte(str))
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT data: %w", err)
 	}
