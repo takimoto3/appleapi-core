@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/http/httptrace"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -258,7 +259,7 @@ func TestCloseIdleConnections(t *testing.T) {
 
 func TestClient_Do(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "bearer tok" {
+		if strings.ToLower(r.Header.Get("Authorization")) != "bearer tok" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
