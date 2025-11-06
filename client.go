@@ -176,7 +176,7 @@ func (c *Client) CloseIdleConnections() {
 	c.HTTPClient.CloseIdleConnections()
 }
 
-// Do sends an HTTP request with a bearer token and optional HTTP trace.
+// Do sends an HTTP request with a Bearer token and optional HTTP trace.
 func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if c.Trace != nil {
 		req = req.WithContext(httptrace.WithClientTrace(req.Context(), c.Trace))
@@ -185,7 +185,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "bearer "+bearer)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 
 	return c.HTTPClient.Do(req)
 }
