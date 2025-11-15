@@ -30,3 +30,16 @@ type HTTPConfig struct {
 	MaxIdleConnsPerHost int           // Maximum idle connections per host
 	TLSConfig           *tls.Config   // TLS settings for HTTPS connections
 }
+
+// GetDefaultConfigValue returns a copy of the default configuration.
+// The returned configuration is independent, and modifications to it
+// will not affect the package's internal state.
+func DefaultConfig() HTTPConfig {
+	// Create a shallow copy of the struct
+	configCopy := *defaultConfig
+	// If TLSConfig is not nil, clone it to ensure a deep copy
+	if defaultConfig.TLSConfig != nil {
+		configCopy.TLSConfig = defaultConfig.TLSConfig.Clone()
+	}
+	return configCopy
+}
