@@ -54,7 +54,6 @@ func TestHTTPClientInitializers(t *testing.T) {
 				"MaxIdleConnsPerHost": 100,
 				"ForceAttemptHTTP2":   true,
 				"Timeout":             time.Duration(0),
-				"ReadIdleTimeout":     0,
 				"TLSClientConfig":     &tls.Config{MaxVersion: tls.VersionTLS13},
 			},
 		},
@@ -66,7 +65,6 @@ func TestHTTPClientInitializers(t *testing.T) {
 				"IdleConnTimeout":     cfg.IdleConnTimeout,
 				"ForceAttemptHTTP2":   true,
 				"Timeout":             cfg.HTTPTimeout,
-				"ReadIdleTimeout":     cfg.ReadIdleTimeout,
 				"TLSClientConfig":     func() *tls.Config { c := cfg.TLSConfig.Clone(); c.NextProtos = []string{"h2", "http/1.1"}; return c }(),
 			},
 		},
@@ -112,12 +110,6 @@ func TestHTTPClientInitializers(t *testing.T) {
 					got = tr1.ForceAttemptHTTP2
 				case "Timeout":
 					got = client.Timeout
-				case "ReadIdleTimeout":
-					if tr2 != nil {
-						got = tr2.ReadIdleTimeout
-					} else {
-						got = 0
-					}
 				case "TLSClientConfig":
 					got = tr1.TLSClientConfig
 				default:

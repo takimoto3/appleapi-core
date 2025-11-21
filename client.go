@@ -65,7 +65,7 @@ func ConfigureHTTPClientInitializer(cfg *HTTPConfig) HTTPClientInitializer {
 		}
 		tr2.ReadIdleTimeout = cfg.ReadIdleTimeout
 
-		return &http.Client{Transport: tr2, Timeout: cfg.HTTPTimeout}, nil
+		return &http.Client{Transport: tr, Timeout: cfg.HTTPTimeout}, nil
 	}
 }
 
