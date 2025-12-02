@@ -93,6 +93,23 @@ func main() {
 }
 ```
 
+## Configuration Options
+
+Both `Client` and `TokenProvider` can be customized using functional options.
+
+### Client Options (`appleapi.Option`)
+
+- `WithDevelopment()`: Configures the client to connect to Apple's development environment.
+- `WithLogger(*slog.Logger)`: Attaches a structured logger to the client for visibility into its internal operations.
+- `WithTransport(http.RoundTripper)`: Replaces the default `http.Transport` with a custom implementation.
+- `WithClientTimeout(time.Duration)`: Sets a timeout for the entire HTTP client request.
+- `WithClientTrace(func(*slog.Logger) *httptrace.ClientTrace)`: Enables detailed `httptrace` logging for requests. (See Advanced Usage).
+
+### TokenProvider Options (`token.Option`)
+
+- `WithLogger(*slog.Logger)`: Attaches a structured logger to the token provider, logging events like token generation and caching.
+- `WithTTL(time.Duration)`: Overrides the default token time-to-live (TTL). The default is 55 minutes.
+
 ## Advanced Usage: Client Tracing
 
 This feature leverages Go’s `net/http/httptrace` package to provide detailed insight into the client’s HTTP lifecycle (DNS resolution, TLS handshake, connection reuse, and more).
