@@ -23,7 +23,7 @@ func (m *mockSigner) Sign(data []byte) ([]byte, error) {
 
 func TestJWTToken_SignedString(t *testing.T) {
 	// Prepare JWTToken
-	jwt := &token.JWTToken{
+	jwt := &token.JWTClaims{
 		Header: token.Header{
 			Alg: "HS256",
 			Kid: "testkey",
@@ -90,7 +90,7 @@ func TestJWTToken_SignedString(t *testing.T) {
 
 func TestJWTToken_SignedString_SignerError(t *testing.T) {
 	// Prepare JWTToken
-	jwt := &token.JWTToken{
+	jwt := &token.JWTClaims{
 		Header: token.Header{Alg: "HS256"},
 	}
 
