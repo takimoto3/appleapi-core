@@ -8,12 +8,6 @@ import (
 	"fmt"
 )
 
-// JWTToken represents a JWT containing a header and a payload.
-type JWTToken struct {
-	Header
-	Payload
-}
-
 // Header defines the JWT header fields.
 type Header struct {
 	Alg string `json:"alg"` // Algorithm used for signing
@@ -26,22 +20,26 @@ type Payload struct {
 	IssuedAt int64  `json:"iat,omitempty"` // Issued at (Unix time)
 }
 
+// JWTClaims represents a JWT containing a header and a payload.
+type JWTClaims struct {
+	Header  any
+	Payload any
+}
+
 // SignedString creates a signed JWT string using the provided signer.
 //
-// Parameters:
-//
 //	s: The Signer implementation used to sign the JWT.
-func (jt *JWTToken) SignedString(s Signer) (string, error) {
-	head, err := json.Marshal(jt.Header)
+func (jwt *JWTClaims) SignedString(s Signer) (string, error) {
+	header, err := json.Marshal(jwt.Header)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JWT header to JSON: %w", err)
 	}
-	payload, err := json.Marshal(jt.Payload)
+	payload, err := json.Marshal(jwt.Payload)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal JWT payload to JSON: %w", err)
 	}
 	// Create the base string: header.payload
-	str := base64.RawURLEncoding.EncodeToString(head) + "." + base64.RawURLEncoding.EncodeToString(payload)
+	str := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	// Sign the base string
 	sign, err := s.Sign([]byte(str))
 	if err != nil {

@@ -101,7 +101,7 @@ func (p *TokenProvider) GetToken(now time.Time) (string, error) {
 		return c.Token, nil
 	}
 
-	jwt := JWTToken{
+	jwt := JWTClaims{
 		Header:  Header{Alg: "ES256", Kid: p.keyID},
 		Payload: Payload{Issuer: p.teamID, IssuedAt: now.Unix()},
 	}
