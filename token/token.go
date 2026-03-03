@@ -52,13 +52,13 @@ type Provider interface {
 
 type cachedToken struct {
 	Token    string
-	ExpireAt time.Time
+	ExpireAt int64
 }
 
 // TokenProvider generates and caches JWT tokens for Apple services (or any JWT-based API)
 // It handles token expiration and signing with the provided key.
 type TokenProvider struct {
-	cache     atomic.Value
+	cache     atomic.Pointer[cachedToken]
 	writeLock sync.Mutex
 	tokenTTL  time.Duration // tokenTTL is the duration before a cached token expires.
 	logger    *slog.Logger  // logger for structured output, can be overridden.
@@ -77,7 +77,7 @@ func NewProvider(keyID, teamID string, privkey *ecdsa.PrivateKey, opts ...Option
 		teamID:   teamID,
 		tokenTTL: TokenTTL,
 	}
-	tp.cache.Store(cachedToken{})
+	tp.cache.Store(&cachedToken{})
 
 	for _, opt := range opts {
 		opt(tp)
@@ -89,15 +89,16 @@ func NewProvider(keyID, teamID string, privkey *ecdsa.PrivateKey, opts ...Option
 // GetToken returns a valid JWT token.
 // It reuses the cached token if still valid, or generates a new one.
 func (p *TokenProvider) GetToken(now time.Time) (string, error) {
-	c := p.cache.Load().(cachedToken)
-	if now.Before(c.ExpireAt) && c.Token != "" {
+	c := p.cache.Load()
+	nowUnix := now.Unix()
+	if nowUnix < c.ExpireAt && c.Token != "" {
 		return c.Token, nil
 	}
 	p.writeLock.Lock()
 	defer p.writeLock.Unlock()
 
-	c = p.cache.Load().(cachedToken)
-	if now.Before(c.ExpireAt) && c.Token != "" {
+	c = p.cache.Load()
+	if nowUnix < c.ExpireAt && c.Token != "" {
 		return c.Token, nil
 	}
 
@@ -110,9 +111,9 @@ func (p *TokenProvider) GetToken(now time.Time) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to sign JWT token: %w", err)
 	}
-	expiresAt := now.Add(p.tokenTTL)
+	expiresAt := now.Add(p.tokenTTL).Unix()
 
-	p.cache.Store(cachedToken{
+	p.cache.Store(&cachedToken{
 		Token:    newToken,
 		ExpireAt: expiresAt,
 	})

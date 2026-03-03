@@ -1,6 +1,6 @@
 module github.com/takimoto3/appleapi-core
 
-go 1.24.12
+go 1.24.13
 
 require (
 	github.com/google/go-cmp v0.7.0

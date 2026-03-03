@@ -33,7 +33,7 @@ func (m *MockTokenProvider) GetToken(_ time.Time) (string, error) {
 
 func TestHTTPClientInitializers(t *testing.T) {
 	cfg := &HTTPConfig{
-		TLSConfig:           &tls.Config{InsecureSkipVerify: true}, // Configure用
+		TLSConfig:           &tls.Config{InsecureSkipVerify: true}, // Configure
 		MaxConnsPerHost:     10,
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     2 * time.Second,
@@ -80,7 +80,6 @@ func TestHTTPClientInitializers(t *testing.T) {
 			var tr1 *http.Transport
 			var tr2 *http2.Transport
 
-			// Transportの型判定
 			switch tr := client.Transport.(type) {
 			case *http.Transport:
 				tr1 = tr

@@ -5,6 +5,7 @@ package token
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"errors"
 	"fmt"
@@ -23,22 +24,24 @@ type SignerECDSA struct {
 	Hash       crypto.Hash       // Hash algorithm used for signing
 }
 
-// Sign generates an ECDSA signature for the given string.
+// Sign generates a raw ECDSA signature (r||s) over the provided data.
 // It supports only 256-bit curves (P-256).
 func (se *SignerECDSA) Sign(data []byte) ([]byte, error) {
 	if se.PrivateKey == nil {
 		return nil, errors.New("missing private key")
 	}
-	if !se.Hash.Available() {
-		se.Hash = crypto.SHA256
+	if se.PrivateKey.Curve != elliptic.P256() {
+		return nil, errors.New("only P-256 is supported")
 	}
 
-	curveBits := se.PrivateKey.Curve.Params().BitSize
-	if curveBits != 256 {
-		return nil, fmt.Errorf("unsupported curve: expected P-256, got %d bits", curveBits)
+	hash := se.Hash
+	if hash == 0 {
+		hash = crypto.SHA256
 	}
-
-	h := se.Hash.New()
+	if !hash.Available() {
+		return nil, fmt.Errorf("hash not available: %v", hash)
+	}
+	h := hash.New()
 	h.Write(data)
 	digest := h.Sum(nil)
 
@@ -46,6 +49,8 @@ func (se *SignerECDSA) Sign(data []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("ecdsa sign failed: %w", err)
 	}
+
+	curveBits := se.PrivateKey.Curve.Params().BitSize
 
 	// Round up curveBits to the nearest byte boundary.
 	keyBytes := (curveBits + 7) / 8
