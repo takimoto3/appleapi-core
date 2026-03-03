@@ -192,7 +192,6 @@ func TestDefaultClientTrace_TableDriven(t *testing.T) {
 		})
 	}
 
-	// contextへの紐づけ確認
 	ctx := httptrace.WithClientTrace(context.Background(), trace)
 	if httptrace.ContextClientTrace(ctx) == nil {
 		t.Errorf("expected ClientTrace to be stored in context")
