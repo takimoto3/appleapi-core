@@ -59,7 +59,6 @@ func TestSignerECDSA_UnsupportedCurve(t *testing.T) {
 		t.Fatal("expected error for unsupported curve, got nil")
 	}
 }
-
 func TestSignerECDSA_Sign_ParallelVerification(t *testing.T) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -77,29 +76,24 @@ func TestSignerECDSA_Sign_ParallelVerification(t *testing.T) {
 	const goroutines = 10
 	const iterations = 20
 
-	errCh := make(chan error, goroutines*iterations)
-
 	for g := 0; g < goroutines; g++ {
-		go func() {
+		g := g // Capture the loop variable for the closure.
+		t.Run(fmt.Sprintf("goroutine-%d", g), func(t *testing.T) {
+			t.Parallel() // Mark this subtest as safe for parallel execution.
 			for i := 0; i < iterations; i++ {
 				sig, err := signer.Sign(message)
 				if err != nil {
-					errCh <- err
-					continue
+					t.Errorf("Sign returned error: %v", err)
+					return
 				}
 
 				r := new(big.Int).SetBytes(sig[:32])
 				s := new(big.Int).SetBytes(sig[32:])
 				if !ecdsa.Verify(&priv.PublicKey, hashSum[:], r, s) {
-					errCh <- fmt.Errorf("invalid signature")
+					t.Error("ECDSA signature verification failed")
+					return
 				}
 			}
-		}()
-	}
-
-	for i := 0; i < goroutines*iterations; i++ {
-		if err := <-errCh; err != nil {
-			t.Fatal(err)
-		}
+		})
 	}
 }
