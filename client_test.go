@@ -3,6 +3,7 @@ package appleapi
 import (
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -65,7 +66,7 @@ func TestHTTPClientInitializers(t *testing.T) {
 				"IdleConnTimeout":     cfg.IdleConnTimeout,
 				"ForceAttemptHTTP2":   true,
 				"Timeout":             cfg.HTTPTimeout,
-				"TLSClientConfig":     func() *tls.Config { c := cfg.TLSConfig.Clone(); c.NextProtos = []string{"h2", "http/1.1"}; return c }(),
+				"TLSClientConfig":     cfg.TLSConfig.Clone(),
 			},
 		},
 	}
@@ -115,7 +116,7 @@ func TestHTTPClientInitializers(t *testing.T) {
 					t.Fatalf("unknown field %s", fname)
 				}
 
-				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{})); diff != "" {
+				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{}), cmpopts.IgnoreFields(tls.Config{}, "NextProtos")); diff != "" {
 					t.Errorf("%s mismatch (-got +want):\n%s", fname, diff)
 				}
 			}
@@ -249,39 +250,96 @@ func TestCloseIdleConnections(t *testing.T) {
 }
 
 func TestClient_Do(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor != 2 {
+			t.Errorf("server: proto = %q, want HTTP/2.0", r.Proto)
+		}
+		if r.TLS == nil {
+			t.Error("server: r.TLS is nil")
+		} else if r.TLS.NegotiatedProtocol != "h2" {
+			t.Errorf("server: NegotiatedProtocol = %q, want h2", r.TLS.NegotiatedProtocol)
+		}
 		if strings.ToLower(r.Header.Get("Authorization")) != "bearer tok" {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		io.WriteString(w, "ok")
 	}))
+	srv.EnableHTTP2 = true
+	srv.StartTLS()
 	defer srv.Close()
 
+	configure := ConfigureHTTPClientInitializer(&HTTPConfig{
+		TLSConfig:           srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone(),
+		MaxConnsPerHost:     10,
+		MaxIdleConnsPerHost: 5,
+		IdleConnTimeout:     2 * time.Second,
+		DialTimeout:         1 * time.Second,
+		KeepAlive:           3 * time.Second,
+		ReadIdleTimeout:     4 * time.Second,
+		HTTPTimeout:         5 * time.Second,
+	})
+
+	testTLSConfig := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+
+	withTestRootCAs := func(init HTTPClientInitializer) HTTPClientInitializer {
+		return func() (*http.Client, error) {
+			client, err := init()
+			if err != nil {
+				return nil, err
+			}
+			tr, ok := client.Transport.(*http.Transport)
+			if !ok {
+				return nil, fmt.Errorf("unexpected transport type %T", client.Transport)
+			}
+			if tr.TLSClientConfig == nil {
+				tr.TLSClientConfig = &tls.Config{}
+			}
+			tr.TLSClientConfig.RootCAs = testTLSConfig.RootCAs
+			return client, nil
+		}
+	}
+
 	tests := map[string]struct {
-		provider token.Provider
-		wantCode int
-		wantErr  bool
+		initializer HTTPClientInitializer
+		provider    token.Provider
+		wantCode    int
+		wantErr     bool
 	}{
-		"valid token": {
-			provider: &MockTokenProvider{token: "tok"},
-			wantCode: http.StatusOK,
-			wantErr:  false,
+		"Default/valid token": {
+			initializer: withTestRootCAs(DefaultHTTPClientInitializer()),
+			provider:    &MockTokenProvider{token: "tok"},
+			wantCode:    http.StatusOK,
 		},
-		"token error": {
-			provider: &MockTokenProvider{err: errors.New("fail")},
-			wantErr:  true,
+		"Configure/valid token": {
+			initializer: configure,
+			provider:    &MockTokenProvider{token: "tok"},
+			wantCode:    http.StatusOK,
+		},
+		"Default/token error": {
+			initializer: withTestRootCAs(DefaultHTTPClientInitializer()),
+			provider:    &MockTokenProvider{err: errors.New("fail")},
+			wantErr:     true,
+		},
+		"Configure/token error": {
+			initializer: configure,
+			provider:    &MockTokenProvider{err: errors.New("fail")},
+			wantErr:     true,
 		},
 	}
 
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			c, err := NewClient(DefaultHTTPClientInitializer(), srv.URL, tt.provider)
+			c, err := NewClient(tt.initializer, srv.URL, tt.provider)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+			req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+			if err != nil {
+				t.Fatalf("NewRequest failed: %v", err)
+			}
+
 			resp, err := c.Do(req)
 			if resp != nil {
 				defer resp.Body.Close()
@@ -298,6 +356,15 @@ func TestClient_Do(t *testing.T) {
 
 			if diff := cmp.Diff(tt.wantCode, resp.StatusCode); diff != "" {
 				t.Errorf("StatusCode mismatch (-want +got):\n%s", diff)
+			}
+
+			if resp.ProtoMajor != 2 {
+				t.Errorf("response proto = %q, want HTTP/2.0", resp.Proto)
+			}
+			if resp.TLS == nil {
+				t.Error("resp.TLS is nil, want TLS connection")
+			} else if resp.TLS.NegotiatedProtocol != "h2" {
+				t.Errorf("NegotiatedProtocol = %q, want h2", resp.TLS.NegotiatedProtocol)
 			}
 		})
 	}
