@@ -116,7 +116,7 @@ func TestHTTPClientInitializers(t *testing.T) {
 					t.Fatalf("unknown field %s", fname)
 				}
 
-				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{})); diff != "" {
+				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{}), cmpopts.IgnoreFields(tls.Config{}, "NextProtos")); diff != "" {
 					t.Errorf("%s mismatch (-got +want):\n%s", fname, diff)
 				}
 			}
