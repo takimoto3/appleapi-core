@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/takimoto3/appleapi-core/token"
-	"golang.org/x/net/http2"
 )
 
 // OptionOrder defines the execution order for Client options.
@@ -38,7 +37,9 @@ func DefaultHTTPClientInitializer() HTTPClientInitializer {
 		tr.TLSClientConfig = &tls.Config{MaxVersion: tls.VersionTLS13} // Use TLS 1.3 only
 		tr.MaxIdleConnsPerHost = 100                                   // Max idle connections per host
 		tr.MaxConnsPerHost = 100                                       // Max total connections per host
-		tr.ForceAttemptHTTP2 = true                                    // Enable HTTP/2
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
+		tr.Protocols.SetHTTP2(true)
 		return &http.Client{Transport: tr}, nil
 	}
 }
@@ -59,12 +60,15 @@ func ConfigureHTTPClientInitializer(cfg *HTTPConfig) HTTPClientInitializer {
 			KeepAlive: cfg.KeepAlive,
 		}).DialContext
 
-		tr2, err := http2.ConfigureTransports(tr)
-		if err != nil {
-			return nil, err
-		}
-		tr2.ReadIdleTimeout = cfg.ReadIdleTimeout
+		tr.Protocols = new(http.Protocols)
+		tr.Protocols.SetHTTP1(true)
+		tr.Protocols.SetHTTP2(true)
 
+		if cfg.ReadIdleTimeout > 0 {
+			tr.HTTP2 = &http.HTTP2Config{
+				SendPingTimeout: cfg.ReadIdleTimeout,
+			}
+		}
 		return &http.Client{Transport: tr, Timeout: cfg.HTTPTimeout}, nil
 	}
 }

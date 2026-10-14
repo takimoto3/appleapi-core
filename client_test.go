@@ -9,16 +9,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/takimoto3/appleapi-core/token"
-	"golang.org/x/net/http2"
 )
 
 type MockTokenProvider struct {
@@ -33,8 +30,9 @@ func (m *MockTokenProvider) GetToken(_ time.Time) (string, error) {
 // --- Tests ---
 
 func TestHTTPClientInitializers(t *testing.T) {
+	defaultTransport := http.DefaultTransport.(*http.Transport)
 	cfg := &HTTPConfig{
-		TLSConfig:           &tls.Config{InsecureSkipVerify: true}, // Configure
+		TLSConfig:           &tls.Config{InsecureSkipVerify: true},
 		MaxConnsPerHost:     10,
 		MaxIdleConnsPerHost: 5,
 		IdleConnTimeout:     2 * time.Second,
@@ -45,29 +43,30 @@ func TestHTTPClientInitializers(t *testing.T) {
 	}
 
 	tests := map[string]struct {
-		init  HTTPClientInitializer
-		wants map[string]any
+		init         HTTPClientInitializer
+		maxConns     int
+		maxIdleConns int
+		idleConn     time.Duration
+		httpTimeout  time.Duration
+		tlsConfig    *tls.Config
+		readIdle     time.Duration
 	}{
 		"Default": {
-			init: DefaultHTTPClientInitializer(),
-			wants: map[string]any{
-				"MaxConnsPerHost":     100,
-				"MaxIdleConnsPerHost": 100,
-				"ForceAttemptHTTP2":   true,
-				"Timeout":             time.Duration(0),
-				"TLSClientConfig":     &tls.Config{MaxVersion: tls.VersionTLS13},
-			},
+			init:         DefaultHTTPClientInitializer(),
+			maxConns:     100,
+			maxIdleConns: 100,
+			idleConn:     defaultTransport.IdleConnTimeout,
+			httpTimeout:  0,
+			tlsConfig:    &tls.Config{MaxVersion: tls.VersionTLS13},
 		},
 		"Configure": {
-			init: ConfigureHTTPClientInitializer(cfg),
-			wants: map[string]any{
-				"MaxConnsPerHost":     cfg.MaxConnsPerHost,
-				"MaxIdleConnsPerHost": cfg.MaxIdleConnsPerHost,
-				"IdleConnTimeout":     cfg.IdleConnTimeout,
-				"ForceAttemptHTTP2":   true,
-				"Timeout":             cfg.HTTPTimeout,
-				"TLSClientConfig":     cfg.TLSConfig.Clone(),
-			},
+			init:         ConfigureHTTPClientInitializer(cfg),
+			maxConns:     cfg.MaxConnsPerHost,
+			maxIdleConns: cfg.MaxIdleConnsPerHost,
+			idleConn:     cfg.IdleConnTimeout,
+			httpTimeout:  cfg.HTTPTimeout,
+			tlsConfig:    cfg.TLSConfig.Clone(),
+			readIdle:     cfg.ReadIdleTimeout,
 		},
 	}
 
@@ -78,47 +77,56 @@ func TestHTTPClientInitializers(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
-			var tr1 *http.Transport
-			var tr2 *http2.Transport
-
-			switch tr := client.Transport.(type) {
-			case *http.Transport:
-				tr1 = tr
-			case *http2.Transport:
-				tr2 = tr
-				// http2.Transport wraps an *http.Transport (`t1`) but doesn't expose it.
-				// We use reflection for testing purposes to inspect its properties.
-				v := reflect.ValueOf(tr2).Elem().FieldByName("t1")
-				if !v.IsValid() || v.IsNil() {
-					t.Fatal("http2.Transport.t1 not found or nil")
-				}
-				tr1 = reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem().Interface().(*http.Transport)
-			default:
+			tr, ok := client.Transport.(*http.Transport)
+			if !ok {
 				t.Fatalf("unexpected transport type %T", client.Transport)
 			}
 
-			for fname, want := range tt.wants {
-				var got any
-				switch fname {
-				case "MaxConnsPerHost":
-					got = tr1.MaxConnsPerHost
-				case "MaxIdleConnsPerHost":
-					got = tr1.MaxIdleConnsPerHost
-				case "IdleConnTimeout":
-					got = tr1.IdleConnTimeout
-				case "ForceAttemptHTTP2":
-					got = tr1.ForceAttemptHTTP2
-				case "Timeout":
-					got = client.Timeout
-				case "TLSClientConfig":
-					got = tr1.TLSClientConfig
-				default:
-					t.Fatalf("unknown field %s", fname)
-				}
+			if tr.MaxConnsPerHost != tt.maxConns {
+				t.Errorf("MaxConnsPerHost = %d, want %d",
+					tr.MaxConnsPerHost, tt.maxConns)
+			}
+			if tr.MaxIdleConnsPerHost != tt.maxIdleConns {
+				t.Errorf("MaxIdleConnsPerHost = %d, want %d",
+					tr.MaxIdleConnsPerHost, tt.maxIdleConns)
+			}
+			if tr.IdleConnTimeout != tt.idleConn {
+				t.Errorf("IdleConnTimeout = %s, want %s",
+					tr.IdleConnTimeout, tt.idleConn)
+			}
+			if client.Timeout != tt.httpTimeout {
+				t.Errorf("Timeout = %s, want %s",
+					client.Timeout, tt.httpTimeout)
+			}
 
-				if diff := cmp.Diff(got, want, cmpopts.IgnoreUnexported(tls.Config{}), cmpopts.IgnoreFields(tls.Config{}, "NextProtos")); diff != "" {
-					t.Errorf("%s mismatch (-got +want):\n%s", fname, diff)
+			if tr.Protocols == nil {
+				t.Fatal("Protocols is nil")
+			}
+			if !tr.Protocols.HTTP1() {
+				t.Error("HTTP/1 is not enabled")
+			}
+			if !tr.Protocols.HTTP2() {
+				t.Error("HTTP/2 is not enabled")
+			}
+
+			if tt.readIdle > 0 {
+				if tr.HTTP2 == nil {
+					t.Fatal("HTTP2 config is nil")
 				}
+				if tr.HTTP2.SendPingTimeout != tt.readIdle {
+					t.Errorf("SendPingTimeout = %s, want %s",
+						tr.HTTP2.SendPingTimeout, tt.readIdle)
+				}
+			} else if tr.HTTP2 != nil && tr.HTTP2.SendPingTimeout != 0 {
+				t.Errorf("SendPingTimeout = %s, want 0", tr.HTTP2.SendPingTimeout)
+			}
+
+			if diff := cmp.Diff(
+				tt.tlsConfig,
+				tr.TLSClientConfig,
+				cmpopts.IgnoreUnexported(tls.Config{}),
+			); diff != "" {
+				t.Errorf("TLSClientConfig mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}
